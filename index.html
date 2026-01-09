@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>XR Hand Calibration Tool</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
+        #ui { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.8); padding: 20px; border-radius: 8px; width: 300px; }
+        .active { color: #00ff00; font-weight: bold; }
+        .joint-tag { font-size: 12px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <h2>Calibration Wizard</h2>
+        <p id="instruction">Waiting for data...</p>
+        <div id="status">Status: Disconnected</div>
+        <hr>
+        <div id="mapping-list"></div>
+    </div>
+
+    <script>
+        // --- 1. Three.js Setup ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        camera.position.z = 1;
+        const spheres = {}; // To store joint meshes
+
+        function updatePoint(id, pos, color = 0x0077ff) {
+            if (!spheres[id]) {
+                const geometry = new THREE.SphereGeometry(0.01, 8, 8);
+                const material = new THREE.MeshBasicMaterial({ color: color });
+                const sphere = new THREE.Mesh(geometry, material);
+                scene.add(sphere);
+                spheres[id] = sphere;
+            }
+            // Scale data for visibility (assuming meters to world units)
+            spheres[id].position.set(pos[0], pos[1], pos[2]);
+        }
+
+        // --- 2. WebSocket & Logic ---
+        const ws = new WebSocket('ws://localhost:8765');
+        const samples = {};
+        const SAMPLE_SIZE = 30;
+
+        ws.onopen = () => document.getElementById('status').innerText = "Status: Connected";
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === "hand") {
+                data.joints.forEach(j => {
+                    updatePoint(j.id, j.pos, data.side === "Left" ? 0x00ff88 : 0xff0088);
+                    
+                    // Store for variance detection
+                    if (!samples[j.id]) samples[j.id] = [];
+                    samples[j.id].push(j.pos);
+                    if (samples[j.id].length > SAMPLE_SIZE) samples[j.id].shift();
+                });
+                monitorVariance();
+            }
+        };
+
+        function monitorVariance() {
+            let maxVar = 0;
+            let activeId = null;
+
+            Object.keys(samples).forEach(id => {
+                const d = samples[id];
+                if (d.length < SAMPLE_SIZE) return;
+                
+                // Simple variance (movement) calculation
+                const variance = d.reduce((acc, curr, i, arr) => {
+                    if (i === 0) return 0;
+                    const prev = arr[i-1];
+                    return acc + Math.hypot(curr[0]-prev[0], curr[1]-prev[1], curr[2]-prev[2]);
+                }, 0);
+
+                if (variance > maxVar) {
+                    maxVar = variance;
+                    activeId = id;
+                }
+            });
+
+            if (maxVar > 0.02) { // Sensitivity threshold
+                document.getElementById('instruction').innerHTML = 
+                    `Moving Joint Detected: <span class="active">ID ${activeId}</span>`;
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
