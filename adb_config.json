@@ -1,0 +1,20 @@
+{
+    "ip_history": [
+        "192.168.137.87",
+        "192.168.137.1"
+    ],
+    "port_history": [
+        "45247",
+        "5555"
+    ],
+    "cmd_history": [
+        "logcat -d > adb_log.txt",
+        "shell pm list packages -3"
+    ],
+    "pair_history": [
+        "192.168.137.x:port"
+    ],
+    "pkg_history": [],
+    "last_path": "D:/AndriodProjectionTool/scrcpy",
+    "notes": "在这里粘贴乱七八糟的东西或做笔记..."
+}

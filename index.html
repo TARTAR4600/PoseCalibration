@@ -1,100 +1,169 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>XR Hand Calibration Tool</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <title>XR Pose Recorder (Offline)</title>
+    <script src="three.min.js"></script>
     <style>
-        body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
-        #ui { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.8); padding: 20px; border-radius: 8px; width: 300px; }
-        .active { color: #00ff00; font-weight: bold; }
-        .joint-tag { font-size: 12px; color: #aaa; }
+        body { margin: 0; background: #000; color: #00ff88; font-family: monospace; overflow: hidden; }
+        #gui { position: absolute; top: 10px; left: 10px; background: rgba(0,20,0,0.9); padding: 15px; border: 1px solid #00ff88; width: 350px; z-index: 100; }
+        .val { color: #fff; font-weight: bold; }
+        .section { border-top: 1px solid #00ff88; margin-top: 10px; padding-top: 5px; }
+        button { 
+            width: 100%; padding: 10px; margin-top: 15px; cursor: pointer;
+            background: #004400; color: #00ff88; border: 1px solid #00ff88; font-weight: bold;
+        }
+        button.recording { background: #660000; color: #ffaaaa; border-color: #ffaaaa; }
+        #rec-status { font-size: 12px; margin-top: 5px; display: block; color: #aaa; }
     </style>
 </head>
 <body>
-    <div id="ui">
-        <h2>Calibration Wizard</h2>
-        <p id="instruction">Waiting for data...</p>
-        <div id="status">Status: Disconnected</div>
-        <hr>
-        <div id="mapping-list"></div>
+    <div id="gui">
+        <div style="font-size: 16px; border-bottom: 1px solid #00ff88">DATA CAPTURE CENTER</div>
+        <div>STATUS: <span id="status" style="color:red">Disconnected</span></div>
+        
+        <div class="section" style="color:#00ff88">HAND (ID:26)</div>
+        <div>V_Lin: <span id="h_v" class="val">0.000</span> m/s</div>
+        <div>V_Ang: <span id="h_w" class="val">0.00</span> deg/s</div>
+        
+        <div class="section" style="color:#ff4444">HEAD</div>
+        <div>V_Lin: <span id="hd_v" class="val">0.000</span> m/s</div>
+        <div>V_Ang: <span id="hd_w" class="val">0.00</span> deg/s</div>
+
+        <button id="recordBtn" onclick="toggleRecording()">START RECORDING</button>
+        <span id="rec-status">Not Recording</span>
     </div>
 
     <script>
-        // --- 1. Three.js Setup ---
         const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.01, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        camera.position.z = 1;
-        const spheres = {}; // To store joint meshes
+        camera.position.set(1.8, 0, 3.5); 
+        camera.lookAt(1.8, 0, 1.9);
 
-        function updatePoint(id, pos, color = 0x0077ff) {
-            if (!spheres[id]) {
-                const geometry = new THREE.SphereGeometry(0.01, 8, 8);
-                const material = new THREE.MeshBasicMaterial({ color: color });
-                const sphere = new THREE.Mesh(geometry, material);
-                scene.add(sphere);
-                spheres[id] = sphere;
-            }
-            // Scale data for visibility (assuming meters to world units)
-            spheres[id].position.set(pos[0], pos[1], pos[2]);
+        const nodes = {}; 
+        const state = { hand: {p:null, q:null, t:0, vL:0, vA:0}, head: {p:null, q:null, t:0, vL:0, vA:0} };
+        
+        // --- 录制逻辑变量 ---
+        let isRecording = false;
+        let dataBuffer = []; // 存储录制的数据行
+
+        function makeLabel(text, color) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 64; canvas.height = 64;
+            ctx.fillStyle = color; ctx.font = 'bold 36px Arial'; ctx.textAlign = 'center';
+            ctx.fillText(text, 32, 45);
+            const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas) }));
+            sprite.scale.set(0.1, 0.1, 1);
+            return sprite;
         }
 
-        // --- 2. WebSocket & Logic ---
         const ws = new WebSocket('ws://localhost:8765');
-        const samples = {};
-        const SAMPLE_SIZE = 30;
+        ws.onopen = () => {
+            document.getElementById('status').innerText = "Connected";
+            document.getElementById('status').style.color = "#00ff88";
+        };
 
-        ws.onopen = () => document.getElementById('status').innerText = "Status: Connected";
-        
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === "hand") {
+        ws.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            const ts = data.ts;
+
+            if (data.type === 'hand') {
                 data.joints.forEach(j => {
-                    updatePoint(j.id, j.pos, data.side === "Left" ? 0x00ff88 : 0xff0088);
+                    const key = `${data.side}_${j.id}`;
+                    if (!nodes[key]) {
+                        const g = new THREE.Group();
+                        const color = data.side === 'Left' ? 0x00ff88 : 0xff00ff;
+                        g.add(new THREE.Mesh(new THREE.SphereGeometry(0.015), new THREE.MeshBasicMaterial({color})));
+                        g.add(makeLabel(j.id, 'white'));
+                        scene.add(g); nodes[key] = g;
+                    }
+                    nodes[key].position.set(j.pos[0], j.pos[1], j.pos[2]);
                     
-                    // Store for variance detection
-                    if (!samples[j.id]) samples[j.id] = [];
-                    samples[j.id].push(j.pos);
-                    if (samples[j.id].length > SAMPLE_SIZE) samples[j.id].shift();
+                    // 只有在录制且为关键关节时记录（或记录所有关节，取决于你的需求）
+                    if (data.side === 'Right' && j.id === 26) {
+                        updatePhys(j.pos, j.rot, ts, 'hand');
+                        if(isRecording) recordRow('Hand_R_26', j.pos, j.rot, state.hand.vL, state.hand.vA);
+                    }
                 });
-                monitorVariance();
+            } else if (data.type === 'head') {
+                if (!nodes['head']) {
+                    const g = new THREE.Group();
+                    g.add(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshBasicMaterial({color:0xff4444, wireframe:true})));
+                    g.add(makeLabel('HEAD', '#ff4444'));
+                    scene.add(g); nodes['head'] = g;
+                }
+                nodes['head'].position.set(data.pos[0], data.pos[1], data.pos[2]);
+                nodes['head'].quaternion.set(data.rot[0], data.rot[1], data.rot[2], data.rot[3]);
+                updatePhys(data.pos, data.rot, ts, 'head');
+                
+                if(isRecording) recordRow('Head', data.pos, data.rot, state.head.vL, state.head.vA);
             }
         };
 
-        function monitorVariance() {
-            let maxVar = 0;
-            let activeId = null;
+        function updatePhys(pos, rot, ts, type) {
+            const p = new THREE.Vector3(...pos);
+            const q = new THREE.Quaternion(...rot);
+            const st = type === 'hand' ? state.hand : state.head;
+            const prefix = type === 'hand' ? 'h' : 'hd';
 
-            Object.keys(samples).forEach(id => {
-                const d = samples[id];
-                if (d.length < SAMPLE_SIZE) return;
-                
-                // Simple variance (movement) calculation
-                const variance = d.reduce((acc, curr, i, arr) => {
-                    if (i === 0) return 0;
-                    const prev = arr[i-1];
-                    return acc + Math.hypot(curr[0]-prev[0], curr[1]-prev[1], curr[2]-prev[2]);
-                }, 0);
-
-                if (variance > maxVar) {
-                    maxVar = variance;
-                    activeId = id;
+            if (st.t > 0) {
+                const dt = ts - st.t;
+                if (dt > 0) {
+                    st.vL = p.distanceTo(st.p) / dt;
+                    st.vA = (q.angleTo(st.q) * 180 / Math.PI) / dt;
+                    document.getElementById(`${prefix}_v`).innerText = st.vL.toFixed(3);
+                    document.getElementById(`${prefix}_w`).innerText = st.vA.toFixed(2);
                 }
-            });
+            }
+            st.p = p; st.q = q; st.t = ts;
+        }
 
-            if (maxVar > 0.02) { // Sensitivity threshold
-                document.getElementById('instruction').innerHTML = 
-                    `Moving Joint Detected: <span class="active">ID ${activeId}</span>`;
+        // --- 录制功能实现 ---
+        function recordRow(source, pos, rot, vL, vA) {
+            const row = [
+                new Date().toISOString(), source, 
+                pos[0], pos[1], pos[2], 
+                rot[0], rot[1], rot[2], rot[3],
+                vL.toFixed(4), vA.toFixed(2)
+            ];
+            dataBuffer.push(row.join(","));
+            document.getElementById('rec-status').innerText = `Buffer: ${dataBuffer.length} frames`;
+        }
+
+        function toggleRecording() {
+            const btn = document.getElementById('recordBtn');
+            if (!isRecording) {
+                // 开始
+                isRecording = true;
+                dataBuffer = ["Timestamp,Source,PX,PY,PZ,QX,QY,QZ,QW,V_Linear,V_Angular"]; // CSV Header
+                btn.innerText = "STOP & SAVE CSV";
+                btn.className = "recording";
+            } else {
+                // 停止并下载
+                isRecording = false;
+                downloadCSV();
+                btn.innerText = "START RECORDING";
+                btn.className = "";
             }
         }
 
-        function animate() {
-            requestAnimationFrame(animate);
-            renderer.render(scene, camera);
+        function downloadCSV() {
+            const blob = new Blob([dataBuffer.join("\n")], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const timeStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            a.setAttribute('href', url);
+            a.setAttribute('download', `XR_Experiment_${timeStr}.csv`);
+            a.click();
+            dataBuffer = [];
+            document.getElementById('rec-status').innerText = "Saved successfully.";
         }
+
+        function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
         animate();
     </script>
 </body>
